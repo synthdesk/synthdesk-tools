@@ -1,0 +1,419 @@
+name: golden gates (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      repo_role:
+        description: "Caller repository role: synthdesk|router|listener"
+        required: false
+        type: string
+        default: synthdesk
+      python_router:
+        description: "Python version used by router standalone gates"
+        required: false
+        type: string
+        default: "3.11"
+      python_listener:
+        description: "Python version used by listener standalone gates"
+        required: false
+        type: string
+        default: "3.11"
+    secrets:
+      GITHUB_TOKEN:
+        required: false
+
+env:
+  SYNTHDESK_ENABLE_TEST_SHIMS: "0"
+
+jobs:
+  gitlink-integrity:
+    name: Gitlink Integrity (Fail-Closed)
+    if: inputs.repo_role == 'synthdesk'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify gitlink SHAs + required paths
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/ci_check_gitlink_integrity_v1.py --strict
+
+  golden-corpus:
+    name: Golden Corpus (Query Semantics)
+    if: inputs.repo_role == 'synthdesk'
+    runs-on: ubuntu-latest
+    needs: gitlink-integrity
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Materialize listener gitlink at pinned SHA
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          LISTENER_SHA="$(git ls-tree HEAD packages/listener | awk '{print $3}')"
+          test -n "$LISTENER_SHA"
+          rm -rf packages/listener
+          git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/synthdesk/synthdesk-listener.git" packages/listener
+          git -C packages/listener checkout --detach "$LISTENER_SHA"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install listener query deps
+        run: pip install pyyaml
+
+      - name: Run golden corpus checks
+        run: |
+          chmod +x tests/golden/check_golden.sh
+          ./tests/golden/check_golden.sh
+
+  determinism-gate:
+    name: Determinism Gate (Replay Truth)
+    if: inputs.repo_role == 'synthdesk'
+    runs-on: ubuntu-latest
+    needs: gitlink-integrity
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Materialize listener gitlink at pinned SHA
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          LISTENER_SHA="$(git ls-tree HEAD packages/listener | awk '{print $3}')"
+          test -n "$LISTENER_SHA"
+          rm -rf packages/listener
+          git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/synthdesk/synthdesk-listener.git" packages/listener
+          git -C packages/listener checkout --detach "$LISTENER_SHA"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install listener replay deps
+        run: pip install pyyaml
+
+      - name: Run determinism gate
+        env:
+          PYTHONHASHSEED: 0
+        run: |
+          chmod +x tests/golden/check_determinism.sh
+          ./tests/golden/check_determinism.sh
+
+  router-golden-corpus:
+    name: Router Golden Corpus (Intent Semantics)
+    if: inputs.repo_role == 'synthdesk'
+    runs-on: ubuntu-latest
+    needs: gitlink-integrity
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Materialize router gitlink at pinned SHA
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ROUTER_SHA="$(git ls-tree HEAD packages/router | awk '{print $3}')"
+          test -n "$ROUTER_SHA"
+          rm -rf packages/router
+          git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/synthdesk/synthdesk-router.git" packages/router
+          git -C packages/router checkout --detach "$ROUTER_SHA"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install router replay deps
+        run: pip install numpy pyyaml cryptography
+
+      - name: Run router golden corpus checks
+        run: |
+          chmod +x packages/router/tests/golden/check_golden.sh
+          ./packages/router/tests/golden/check_golden.sh
+
+  router-determinism-gate:
+    name: Router Determinism Gate (Replay Truth)
+    if: inputs.repo_role == 'synthdesk'
+    runs-on: ubuntu-latest
+    needs: gitlink-integrity
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Materialize router gitlink at pinned SHA
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ROUTER_SHA="$(git ls-tree HEAD packages/router | awk '{print $3}')"
+          test -n "$ROUTER_SHA"
+          rm -rf packages/router
+          git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/synthdesk/synthdesk-router.git" packages/router
+          git -C packages/router checkout --detach "$ROUTER_SHA"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install router replay deps
+        run: pip install numpy pyyaml cryptography
+
+      - name: Run router determinism gate
+        env:
+          PYTHONHASHSEED: 0
+        run: |
+          chmod +x packages/router/tests/golden/check_determinism.sh
+          ./packages/router/tests/golden/check_determinism.sh
+
+  court-doctrine:
+    name: Court Doctrine (No Verdict Without Note)
+    if: inputs.repo_role == 'synthdesk'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Run court doctrine check
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          else
+            BASE_SHA="${{ github.event.before }}"
+            HEAD_SHA="${{ github.sha }}"
+          fi
+          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            BASE_SHA="$(git rev-parse "${HEAD_SHA}^" 2>/dev/null || git rev-list --max-parents=0 "$HEAD_SHA")"
+          fi
+          python3 scripts/ci_check_court_publish_contract_v1.py \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA"
+
+  event-authority-lint:
+    name: Event Authority Lint (Strict)
+    if: inputs.repo_role == 'synthdesk'
+    runs-on: ubuntu-latest
+    needs: gitlink-integrity
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Materialize router gitlink at pinned SHA
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ROUTER_SHA="$(git ls-tree HEAD packages/router | awk '{print $3}')"
+          test -n "$ROUTER_SHA"
+          rm -rf packages/router
+          git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/synthdesk/synthdesk-router.git" packages/router
+          git -C packages/router checkout --detach "$ROUTER_SHA"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Run event-type linter (strict — no new literals allowed)
+        run: |
+          python3 scripts/lint_event_types.py --strict
+
+  deploy-integrity-gates:
+    name: Deploy Integrity Gates (Strict)
+    if: inputs.repo_role == 'synthdesk'
+    runs-on: ubuntu-latest
+    needs: gitlink-integrity
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Materialize router gitlink at pinned SHA
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ROUTER_SHA="$(git ls-tree HEAD packages/router | awk '{print $3}')"
+          test -n "$ROUTER_SHA"
+          rm -rf packages/router
+          git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/synthdesk/synthdesk-router.git" packages/router
+          git -C packages/router checkout --detach "$ROUTER_SHA"
+
+      - name: Materialize listener gitlink at pinned SHA
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          LISTENER_SHA="$(git ls-tree HEAD packages/listener | awk '{print $3}')"
+          test -n "$LISTENER_SHA"
+          rm -rf packages/listener
+          git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/synthdesk/synthdesk-listener.git" packages/listener
+          git -C packages/listener checkout --detach "$LISTENER_SHA"
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install pytest
+        run: pip install pytest pyyaml numpy
+
+      - name: Run deploy integrity strict checks
+        run: |
+          python3 scripts/ci_check_unit_arg_parity_v1.py --strict
+          python3 scripts/ci_check_tailer_truncation_guard_v1.py --strict
+          python3 scripts/deploy_hash_gate_v1.py --strict
+
+      - name: Run deploy integrity unit tests
+        run: |
+          python3 -m pytest -q \
+            tests/test_ci_check_unit_arg_parity_v1.py \
+            tests/test_ci_check_tailer_truncation_guard_v1.py \
+            tests/test_deploy_hash_gate_v1.py \
+            tests/test_system_health_watchdog_invariant_v1.py
+
+  event-authority-guard-tests:
+    name: Event Authority Guard Tests
+    if: inputs.repo_role == 'synthdesk'
+    runs-on: ubuntu-latest
+    needs: gitlink-integrity
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Materialize router gitlink at pinned SHA
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ROUTER_SHA="$(git ls-tree HEAD packages/router | awk '{print $3}')"
+          test -n "$ROUTER_SHA"
+          rm -rf packages/router
+          git clone "https://x-access-token:${GITHUB_TOKEN}@github.com/synthdesk/synthdesk-router.git" packages/router
+          git -C packages/router checkout --detach "$ROUTER_SHA"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install pytest
+        run: pip install pytest pyyaml numpy
+
+      - name: Run observer guard tests
+        env:
+          PYTHONPATH: packages/spine_sdk:packages/observer
+        run: python3 -m pytest packages/observer/tests/test_event_authority.py -v
+
+      - name: Run router guard tests
+        env:
+          PYTHONPATH: packages/spine_sdk:packages/router
+        run: python3 -m pytest packages/router/tests/test_event_authority.py -v
+
+  observer-harness-tests:
+    name: Observer Harness Test Suite
+    if: inputs.repo_role == 'synthdesk'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install pytest
+        run: pip install pytest pyyaml
+
+      - name: Run full observer harness tests
+        env:
+          SYNTHDESK_ENABLE_TEST_SHIMS: "1"
+          PYTHONPATH: packages/spine_sdk:packages/observer
+        run: python3 -m pytest packages/observer/harness/tests -v
+
+  router-standalone-gates:
+    name: Router Standalone Gates
+    if: inputs.repo_role == 'router'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_router }}
+
+      - name: Install router deps
+        run: pip install pytest numpy pyyaml cryptography
+
+      - name: Event authority tests
+        run: python3 -m pytest -q tests/test_event_authority.py
+
+      - name: Golden determinism
+        env:
+          PYTHONHASHSEED: 0
+        run: |
+          chmod +x tests/golden/check_determinism.sh
+          ./tests/golden/check_determinism.sh
+
+      - name: Golden corpus
+        run: |
+          chmod +x tests/golden/check_golden.sh
+          ./tests/golden/check_golden.sh
+
+  listener-standalone-gates:
+    name: Listener Standalone Gates
+    if: inputs.repo_role == 'listener'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_listener }}
+
+      - name: Schema check
+        run: |
+          python tests/inspection/assert_schema.py \
+            tests/fixtures/tick_observation.sample.jsonl
+
+      - name: Monotonic timestamp check
+        run: |
+          python tests/inspection/assert_monotonic_ts.py \
+            tests/fixtures/tick_observation.sample.jsonl
+
+      - name: Forbidden capability guard
+        run: python ci/forbidden_capabilities.py
+
+      - name: Determinism gate
+        run: python scripts/verify_day.py baselines/2025-12-30
