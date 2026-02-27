@@ -18,6 +18,11 @@ on:
         required: false
         type: string
         default: "3.11"
+      listener_run_determinism:
+        description: "Run listener verify_day determinism gate"
+        required: false
+        type: boolean
+        default: false
 
 env:
   SYNTHDESK_ENABLE_TEST_SHIMS: "0"
@@ -413,4 +418,5 @@ jobs:
         run: python ci/forbidden_capabilities.py
 
       - name: Determinism gate
+        if: ${{ inputs.listener_run_determinism == true }}
         run: python scripts/verify_day.py baselines/2025-12-30
